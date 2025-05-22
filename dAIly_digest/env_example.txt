@@ -1,0 +1,50 @@
+# ===== DAILY DIGEST CONFIGURATION =====
+# Skopiuj ten plik jako .env i wypełnij własnymi danymi
+
+# ===== GMAIL CONFIGURATION =====
+# Adres Gmail z którego będą wysyłane e-maile
+GMAIL_EMAIL=twoj.email@gmail.com
+
+# Hasło aplikacji Gmail (nie hasło do konta!)
+# Instrukcja generowania: https://support.google.com/accounts/answer/185833
+GMAIL_APP_PASSWORD=abcd efgh ijkl mnop
+
+# Adres e-mail odbiorcy (może być ten sam co nadawca)
+RECIPIENT_EMAIL=odbiorca@gmail.com
+
+# ===== GOOGLE CALENDAR API =====
+# Ścieżka do pliku credentials.json z Google Cloud Console
+# Instrukcja: https://developers.google.com/calendar/api/quickstart/python
+GOOGLE_CREDENTIALS_PATH=credentials.json
+
+# ID kalendarza Google (domyślnie: primary dla głównego kalendarza)
+GOOGLE_CALENDAR_ID=primary
+
+# ===== OPENWEATHERMAP API =====
+# Klucz API z OpenWeatherMap (darmowy plan dostępny)
+# Rejestracja: https://openweathermap.org/api
+OPENWEATHERMAP_API_KEY=your_openweathermap_api_key_here
+
+# Miasto dla prognozy pogody (po polsku lub angielsku)
+WEATHER_CITY=Warsaw
+
+# ===== NOTION API =====
+# Token integracji Notion
+# Instrukcja: https://developers.notion.com/docs/getting-started
+NOTION_TOKEN=secret_your_notion_integration_token_here
+
+# ID bazy danych Notion z artykułami
+# Format: 32-znakowy identyfikator bez myślników
+NOTION_DATABASE_ID=your_notion_database_id_here
+
+# ===== OPENAI API =====
+# Klucz API OpenAI dla generowania spersonalizowanych treści
+# Pobierz z: https://platform.openai.com/api-keys
+OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# ===== OPCJONALNE USTAWIENIA =====
+# Poziom logowania (DEBUG, INFO, WARNING, ERROR)
+LOG_LEVEL=INFO
+
+# Ścieżka do pliku z cytatami (domyślnie: quotes.json)
+QUOTES_FILE=quotes.json 
