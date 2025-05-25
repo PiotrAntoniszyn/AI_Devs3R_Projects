@@ -119,42 +119,87 @@ class GoogleCalendarIntegration(APIIntegration):
             return []
         
         def _get_events():
-            calendar_id = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
+            # Zamiast pojedynczego ID, używamy listy ID kalendarzy
+            calendar_ids_str = os.getenv('GOOGLE_CALENDAR_IDS', 'primary')
+            # Dzielimy string z ID kalendarzy po przecinku
+            calendar_ids = [cal_id.strip() for cal_id in calendar_ids_str.split(',')]
             
             # Dziś od 00:00 do 23:59
             today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             today_end = today_start + timedelta(days=1) - timedelta(seconds=1)
             
-            events_result = self.service.events().list(
-                calendarId=calendar_id,
-                timeMin=today_start.isoformat() + 'Z',
-                timeMax=today_end.isoformat() + 'Z',
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
-            
-            events = events_result.get('items', [])
-            
             formatted_events = []
-            for event in events:
-                start_time = event['start'].get('dateTime', event['start'].get('date'))
-                summary = event.get('summary', 'Brak tytułu')
-                location = event.get('location', '')
-                description = event.get('description', '')
-                
-                # Formatowanie czasu
-                if 'T' in start_time:  # DateTime format
-                    start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                    time_str = start_dt.strftime('%H:%M')
-                else:  # Date format (cały dzień)
-                    time_str = 'Cały dzień'
-                
-                formatted_events.append({
-                    'time': time_str,
-                    'title': summary,
-                    'location': location,
-                    'description': description
-                })
+            # Iterujemy po wszystkich kalendarzach
+            for calendar_id in calendar_ids:
+                try:
+                    # Pobierz informacje o kalendarzu, aby uzyskać jego nazwę
+                    calendar_info = self.service.calendars().get(calendarId=calendar_id).execute()
+                    calendar_name = calendar_info.get('summary', calendar_id)
+                    
+                    events_result = self.service.events().list(
+                        calendarId=calendar_id,
+                        timeMin=today_start.isoformat() + 'Z',
+                        timeMax=today_end.isoformat() + 'Z',
+                        singleEvents=True,
+                        orderBy='startTime'
+                    ).execute()
+                    
+                    events = events_result.get('items', [])
+                    logger.info(f"Pobrano {len(events)} wydarzeń z kalendarza {calendar_name}")
+                    
+                    for event in events:
+                        start_time = event['start'].get('dateTime', event['start'].get('date'))
+                        summary = event.get('summary', 'Brak tytułu')
+                        location = event.get('location', '')
+                        # Usuwamy pole description zgodnie z żądaniem
+                        
+                        # Formatowanie czasu z uwzględnieniem strefy czasowej Polski
+                        if 'T' in start_time:  # DateTime format
+                            # Parsuj czas do obiektu datetime
+                            start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                            
+                            # Konwertuj do czasu polskiego (dodaj 1 lub 2 godziny, zależnie od czasu letniego/zimowego)
+                            # Prosta metoda - dodaj odpowiednią liczbę godzin
+                            # Sprawdź, czy mamy czas letni czy zimowy
+                            # W Polsce czas letni jest od ostatniej niedzieli marca do ostatniej niedzieli października
+                            year = start_dt.year
+                            is_summer_time = False
+                            
+                            # Znajdź ostatnią niedzielę marca
+                            march_last_day = datetime(year, 3, 31)
+                            march_last_sunday = march_last_day - timedelta(days=march_last_day.weekday() + 1 if march_last_day.weekday() < 6 else 0)
+                            
+                            # Znajdź ostatnią niedzielę października
+                            october_last_day = datetime(year, 10, 31)
+                            october_last_sunday = october_last_day - timedelta(days=october_last_day.weekday() + 1 if october_last_day.weekday() < 6 else 0)
+                            
+                            # Sprawdź, czy jesteśmy w okresie czasu letniego
+                            if march_last_sunday <= start_dt.replace(tzinfo=None) < october_last_sunday:
+                                is_summer_time = True
+                            
+                            # Dodaj odpowiednią liczbę godzin
+                            if is_summer_time:
+                                start_dt = start_dt + timedelta(hours=2)  # Czas letni w Polsce to UTC+2
+                            else:
+                                start_dt = start_dt + timedelta(hours=1)  # Czas zimowy w Polsce to UTC+1
+                                
+                            time_str = start_dt.strftime('%H:%M')
+                        else:  # Date format (cały dzień)
+                            time_str = 'Cały dzień'
+                        
+                        formatted_events.append({
+                            'time': time_str,
+                            'title': summary,
+                            'location': location,
+                            'calendar_name': calendar_name  # Przekazujemy nazwę kalendarza zamiast ID
+                        })
+                except Exception as e:
+                    error_msg = f"Błąd podczas pobierania wydarzeń z kalendarza {calendar_id}: {str(e)}"
+                    logger.error(error_msg)
+                    self.errors.append(error_msg)
+            
+            # Sortowanie wszystkich wydarzeń według czasu
+            formatted_events.sort(key=lambda event: '00:00' if event['time'] == 'Cały dzień' else event['time'])
             
             return formatted_events
         
@@ -215,7 +260,7 @@ class NotionIntegration(APIIntegration):
         }
     
     def get_articles_not_started(self) -> List[Dict[str, Any]]:
-        """Pobiera artykuły ze statusem 'Not started' (bez zmiany statusu)."""
+        """Pobiera artykuły ze statusem 'Not started' i zmienia ich status na 'Done'."""
         if not self.token or not self.database_id:
             self.errors.append("Brak tokenu lub ID bazy danych Notion")
             return []
@@ -227,7 +272,7 @@ class NotionIntegration(APIIntegration):
             query_data = {
                     "filter": {
                         "property": "Status",
-                        "status": {
+                        "select": {
                         "equals": "Not started"
                         }
                     }
@@ -264,11 +309,45 @@ class NotionIntegration(APIIntegration):
                     'page_id': result['id']
                 })
             
+            selected_articles = []
             if len(all_articles) > 3:
-                return random.sample(all_articles, 3)
-            return all_articles
+                selected_articles = random.sample(all_articles, 3)
+            else:
+                selected_articles = all_articles
+            
+            # Zmień status wybranych artykułów na "Done"
+            self._update_article_status(selected_articles)
+            
+            return selected_articles
         
         return self.retry_operation("Notion", _get_articles) or []
+    
+    def _update_article_status(self, articles: List[Dict[str, Any]]) -> None:
+        """Zmienia status artykułów na 'Done'."""
+        for article in articles:
+            page_id = article.get('page_id')
+            if not page_id:
+                continue
+                
+            update_url = f"https://api.notion.com/v1/pages/{page_id}"
+            update_data = {
+                "properties": {
+                    "Status": {
+                        "select": {
+                            "name": "Done"
+                        }
+                    }
+                }
+            }
+            
+            try:
+                response = requests.patch(update_url, headers=self.headers, json=update_data, timeout=10)
+                response.raise_for_status()
+                logger.info(f"Zmieniono status artykułu '{article['name']}' na 'Done'")
+            except Exception as e:
+                error_msg = f"Błąd podczas aktualizacji statusu artykułu '{article['name']}': {str(e)}"
+                logger.error(error_msg)
+                self.errors.append(error_msg)
 
 
 class QuotesManager:
@@ -303,7 +382,7 @@ class QuotesManager:
                     {
                         "role": "system",
                         "content": """Jesteś ekspertem od generowania krótkich, inspirujących cytatów. 
-                                    Odpowiedz tylko samym cytatem, jego autorem i źródłem (jeśli znane, może być 'Myśl własna' lub podobne).
+                                    Odpowiedz tylko samym cytatem, jego autorem i źródłem (autor i źródło mają być autentyczne).
                                     Format odpowiedzi powinien być JSON: {"quote": "Treść cytatu", "author": "Autor cytatu", "source": "Źródło/Książka"}."""
                     },
                     {
@@ -427,7 +506,7 @@ class EmailSender:
             
             # Utwórz wiadomość
             msg = MIMEMultipart('alternative')
-            msg['Subject'] = f"📅 Dzienny Digest - {datetime.now().strftime('%d.%m.%Y')}"
+            msg['Subject'] = f"📅 Daily Digest - {datetime.now().strftime('%d.%m.%Y')}"
             msg['From'] = formataddr(('Daily Digest', self.email))
             msg['To'] = self.recipient
             
@@ -475,12 +554,17 @@ class EmailSender:
         
         html = ''
         for event in events:
+            # Dodaj informację o kalendarzu, jeśli jest dostępna i nie jest 'primary'
+            calendar_info = ''
+            if 'calendar_name' in event and event['calendar_name'] != 'primary':
+                calendar_info = f'<div style="color: #777; font-size: 12px; margin-top: 2px;">Kalendarz: {event["calendar_name"]}</div>'
+            
             html += f'''
             <div style="margin-bottom: 15px; padding: 10px; background-color: #f8f9fa; border-radius: 8px;">
                 <div style="font-weight: 600; color: #007AFF;">{event['time']}</div>
                 <div style="font-weight: 500; margin-top: 5px;">{event['title']}</div>
-                {f'<div style="color: #666; font-size: 14px; margin-top: 3px;">📍 {event["location"]}</div>' if event['location'] else ''}
-                {f'<div style="color: #666; font-size: 14px; margin-top: 3px;">{event["description"]}</div>' if event['description'] else ''}
+                {f'<div style="color: #666; font-size: 14px; margin-top: 3px;">📍 {event["location"]}</div>' if event.get('location') else ''}
+                {calendar_info}
             </div>
             '''
         return html
