@@ -444,7 +444,7 @@ class AIContentGenerator:
                         "content": """Jesteś asystentem do tworzenia codziennych podsumowań. 
                         Twoim zadaniem jest stworzenie przyjaznego, ale profesjonalnego podsumowania dnia w języku polskim.
                         Używaj luźnego, ale nie przesadnie potocznego tonu. 
-                        Bądź pomocny i motywujący. Nie dodawaj zbędnych znaczników HTML - zostanie to użyte w szablonie HTML."""
+                        Bądź pomocny i motywujący. Nie dodawaj zbędnych znaczników HTML - zostanie to użyte w szablonie HTML. Nie dodawaj cytatu w podsumowaniu."""
                     },
                     {
                         "role": "user",
