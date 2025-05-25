@@ -1,0 +1,14 @@
+name: Deploy via n8n
+
+on:
+  push:
+    branches:
+      - main  # lub inna gałąź
+
+jobs:
+  call-n8n:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger n8n webhook
+        run: |
+          curl -X POST https://marek293-20293.wykr.es/webhook/daily_digest_github_deploy
