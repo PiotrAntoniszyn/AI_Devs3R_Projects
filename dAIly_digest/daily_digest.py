@@ -153,36 +153,12 @@ class GoogleCalendarIntegration(APIIntegration):
                         location = event.get('location', '')
                         # Usuwamy pole description zgodnie z żądaniem
                         
-                        # Formatowanie czasu z uwzględnieniem strefy czasowej Polski
+                        # Formatowanie czasu bez uwzględniania strefy czasowej
                         if 'T' in start_time:  # DateTime format
-                            # Parsuj czas do obiektu datetime
-                            start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                            
-                            # Konwertuj do czasu polskiego (dodaj 1 lub 2 godziny, zależnie od czasu letniego/zimowego)
-                            # Prosta metoda - dodaj odpowiednią liczbę godzin
-                            # Sprawdź, czy mamy czas letni czy zimowy
-                            # W Polsce czas letni jest od ostatniej niedzieli marca do ostatniej niedzieli października
-                            year = start_dt.year
-                            is_summer_time = False
-                            
-                            # Znajdź ostatnią niedzielę marca
-                            march_last_day = datetime(year, 3, 31)
-                            march_last_sunday = march_last_day - timedelta(days=march_last_day.weekday() + 1 if march_last_day.weekday() < 6 else 0)
-                            
-                            # Znajdź ostatnią niedzielę października
-                            october_last_day = datetime(year, 10, 31)
-                            october_last_sunday = october_last_day - timedelta(days=october_last_day.weekday() + 1 if october_last_day.weekday() < 6 else 0)
-                            
-                            # Sprawdź, czy jesteśmy w okresie czasu letniego
-                            if march_last_sunday <= start_dt.replace(tzinfo=None) < october_last_sunday:
-                                is_summer_time = True
-                            
-                            # Dodaj odpowiednią liczbę godzin
-                            if is_summer_time:
-                                start_dt = start_dt + timedelta(hours=2)  # Czas letni w Polsce to UTC+2
-                            else:
-                                start_dt = start_dt + timedelta(hours=1)  # Czas zimowy w Polsce to UTC+1
-                                
+                            # Parsuj czas do obiektu datetime i wyciągnij tylko godzinę i minutę
+                            # Usuń informacje o strefie czasowej jeśli są obecne
+                            clean_time = start_time.split('+')[0].split('Z')[0]  # Usuń timezone info
+                            start_dt = datetime.fromisoformat(clean_time)
                             time_str = start_dt.strftime('%H:%M')
                         else:  # Date format (cały dzień)
                             time_str = 'Cały dzień'
@@ -215,13 +191,14 @@ class WeatherIntegration(APIIntegration):
         self.city = os.getenv('WEATHER_CITY', 'Warsaw')
     
     def get_weather_forecast(self) -> Dict[str, Any]:
-        """Pobiera prognozę pogody na dziś"""
+        """Pobiera prognozę pogody na dziś z podziałem na godziny"""
         if not self.api_key:
             self.errors.append("Brak klucza API dla OpenWeatherMap")
             return {}
         
         def _get_weather():
-            url = f"http://api.openweathermap.org/data/2.5/weather"
+            # Używamy API forecast zamiast current weather
+            url = f"http://api.openweathermap.org/data/2.5/forecast"
             params = {
                 'q': self.city,
                 'appid': self.api_key,
@@ -233,14 +210,49 @@ class WeatherIntegration(APIIntegration):
             response.raise_for_status()
             data = response.json()
             
+            # Filtruj prognozy tylko na dziś
+            today = datetime.now().date()
+            today_forecasts = []
+            
+            for forecast in data['list']:
+                forecast_time = datetime.fromtimestamp(forecast['dt'])
+                if forecast_time.date() == today:
+                    today_forecasts.append({
+                        'time': forecast_time.strftime('%H:%M'),
+                        'temperature': round(forecast['main']['temp']),
+                        'feels_like': round(forecast['main']['feels_like']),
+                        'description': forecast['weather'][0]['description'].capitalize(),
+                        'humidity': forecast['main']['humidity'],
+                        'pressure': forecast['main']['pressure'],
+                        'wind_speed': forecast['wind']['speed'],
+                        'icon': forecast['weather'][0]['icon'],
+                        'rain_probability': round(forecast.get('pop', 0) * 100)  # Prawdopodobieństwo opadów
+                    })
+            
+            # Jeśli nie ma prognoz na dziś (np. późno wieczorem), weź pierwszą dostępną
+            if not today_forecasts and data['list']:
+                first_forecast = data['list'][0]
+                forecast_time = datetime.fromtimestamp(first_forecast['dt'])
+                today_forecasts.append({
+                    'time': forecast_time.strftime('%H:%M'),
+                    'temperature': round(first_forecast['main']['temp']),
+                    'feels_like': round(first_forecast['main']['feels_like']),
+                    'description': first_forecast['weather'][0]['description'].capitalize(),
+                    'humidity': first_forecast['main']['humidity'],
+                    'pressure': first_forecast['main']['pressure'],
+                    'wind_speed': first_forecast['wind']['speed'],
+                    'icon': first_forecast['weather'][0]['icon'],
+                    'rain_probability': round(first_forecast.get('pop', 0) * 100)
+                })
+            
             return {
-                'temperature': round(data['main']['temp']),
-                'feels_like': round(data['main']['feels_like']),
-                'description': data['weather'][0]['description'].capitalize(),
-                'humidity': data['main']['humidity'],
-                'pressure': data['main']['pressure'],
-                'wind_speed': data['wind']['speed'],
-                'city': data['name']
+                'city': data['city']['name'],
+                'forecasts': today_forecasts,
+                'summary': {
+                    'min_temp': min([f['temperature'] for f in today_forecasts]) if today_forecasts else 'N/A',
+                    'max_temp': max([f['temperature'] for f in today_forecasts]) if today_forecasts else 'N/A',
+                    'avg_humidity': round(sum([f['humidity'] for f in today_forecasts]) / len(today_forecasts)) if today_forecasts else 'N/A'
+                }
             }
         
         return self.retry_operation("OpenWeatherMap", _get_weather) or {}
@@ -468,12 +480,23 @@ class AIContentGenerator:
         articles = data.get('articles', [])
         quote = data.get('quote', {})
         
+        # Przygotuj informacje o pogodzie
+        weather_info = "brak danych"
+        if weather and weather.get('forecasts'):
+            forecasts = weather.get('forecasts', [])
+            summary = weather.get('summary', {})
+            if forecasts:
+                first_forecast = forecasts[0]
+                weather_info = f"{first_forecast.get('description', 'brak opisu')} {first_forecast.get('temperature', 'N/A')}°C"
+                if summary.get('min_temp') != summary.get('max_temp'):
+                    weather_info += f" (dziś {summary.get('min_temp', 'N/A')}°C - {summary.get('max_temp', 'N/A')}°C)"
+        
         prompt = f"""
         Stwórz krótkie (2-3 zdania), przyjazne wprowadzenie do dzisiejszego dnia w języku polskim.
         Weź pod uwagę:
         
         Wydarzenia na dziś: {len(events)} wydarzeń zaplanowanych
-        Pogoda: {weather.get('description', 'brak danych')} {weather.get('temperature', 'N/A')}°C
+        Pogoda: {weather_info}
         Artykuły do przeczytania: {len(articles)} artykułów
         Cytat dnia: "{quote.get('quote', 'Brak cytatu')}" - {quote.get('author', 'Nieznany')}
         
@@ -570,22 +593,89 @@ class EmailSender:
         return html
     
     def _generate_weather_html(self, weather: Dict[str, Any]) -> str:
-        """Generuje HTML dla sekcji pogody"""
-        if not weather:
+        """Generuje HTML dla sekcji pogody z prognozą na cały dzień"""
+        if not weather or not weather.get('forecasts'):
             return '<p style="color: #666;">Brak danych pogodowych.</p>'
         
-        return f'''
+        forecasts = weather.get('forecasts', [])
+        summary = weather.get('summary', {})
+        city = weather.get('city', 'Nieznane miasto')
+        
+        # Mapowanie ikon pogodowych na emoji
+        weather_icons = {
+            '01d': '☀️', '01n': '🌙',  # clear sky
+            '02d': '⛅', '02n': '☁️',  # few clouds
+            '03d': '☁️', '03n': '☁️',  # scattered clouds
+            '04d': '☁️', '04n': '☁️',  # broken clouds
+            '09d': '🌧️', '09n': '🌧️',  # shower rain
+            '10d': '🌦️', '10n': '🌧️',  # rain
+            '11d': '⛈️', '11n': '⛈️',  # thunderstorm
+            '13d': '❄️', '13n': '❄️',  # snow
+            '50d': '🌫️', '50n': '🌫️'   # mist
+        }
+        
+        # Nagłówek z podsumowaniem
+        html = f'''
         <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px;">
-            <div style="font-size: 24px; font-weight: 600; color: #007AFF;">{weather.get('temperature', 'N/A')}°C</div>
-            <div style="font-size: 16px; margin-top: 5px;">{weather.get('description', 'Brak opisu')}</div>
-            <div style="font-size: 14px; color: #666; margin-top: 8px;">
-                Odczuwalna: {weather.get('feels_like', 'N/A')}°C | 
-                Wilgotność: {weather.get('humidity', 'N/A')}% | 
-                Wiatr: {weather.get('wind_speed', 'N/A')} m/s
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div>
+                    <div style="font-size: 18px; font-weight: 600; color: #007AFF;">📍 {city}</div>
+                    <div style="font-size: 14px; color: #666; margin-top: 2px;">
+                        {summary.get('min_temp', 'N/A')}°C - {summary.get('max_temp', 'N/A')}°C | 
+                        Wilgotność: {summary.get('avg_humidity', 'N/A')}%
+                    </div>
+                </div>
             </div>
-            <div style="font-size: 12px; color: #999; margin-top: 5px;">📍 {weather.get('city', 'Nieznane miasto')}</div>
-        </div>
         '''
+        
+        # Prognoza godzinowa w stylu podobnym do obrazka
+        if forecasts:
+            html += '''
+            <div style="display: flex; overflow-x: auto; gap: 15px; padding: 10px 0;">
+            '''
+            
+            for forecast in forecasts:
+                icon = weather_icons.get(forecast.get('icon', ''), '🌤️')
+                rain_info = ''
+                if forecast.get('rain_probability', 0) > 0:
+                    rain_info = f'<div style="color: #007AFF; font-size: 11px; margin-top: 2px;">💧 {forecast["rain_probability"]}%</div>'
+                
+                html += f'''
+                <div style="
+                    min-width: 80px; 
+                    text-align: center; 
+                    background-color: white; 
+                    padding: 12px 8px; 
+                    border-radius: 8px; 
+                    border: 1px solid #e0e0e0;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                ">
+                    <div style="font-weight: 600; font-size: 14px; color: #333; margin-bottom: 8px;">
+                        {forecast['time']}
+                    </div>
+                    <div style="font-size: 24px; margin: 8px 0;">
+                        {icon}
+                    </div>
+                    <div style="font-size: 12px; color: #666; margin-bottom: 4px; line-height: 1.2;">
+                        {forecast['description']}
+                    </div>
+                    <div style="font-weight: 600; font-size: 16px; color: #333; margin: 6px 0;">
+                        {forecast['temperature']}°C
+                    </div>
+                    <div style="font-size: 11px; color: #999;">
+                        Odczuwalnie {forecast['feels_like']}°C
+                    </div>
+                    {rain_info}
+                    <div style="font-size: 10px; color: #999; margin-top: 4px;">
+                        💨 {forecast['wind_speed']} m/s
+                    </div>
+                </div>
+                '''
+            
+            html += '</div>'
+        
+        html += '</div>'
+        return html
     
     def _generate_articles_html(self, articles: List[Dict[str, Any]]) -> str:
         """Generuje HTML dla sekcji artykułów"""
@@ -659,7 +749,13 @@ def main():
         logger.info(f"Pobrano {len(events)} wydarzeń z kalendarza")
         
         weather_data = weather.get_weather_forecast()
-        logger.info(f"Pobrano dane pogodowe: {weather_data.get('description', 'brak')}")
+        # Zaktualizowane logowanie dla nowej struktury danych pogodowych
+        if weather_data and weather_data.get('forecasts'):
+            forecasts_count = len(weather_data.get('forecasts', []))
+            city = weather_data.get('city', 'nieznane miasto')
+            logger.info(f"Pobrano prognozę pogody dla {city}: {forecasts_count} prognoz na dziś")
+        else:
+            logger.info("Pobrano dane pogodowe: brak danych")
         
         articles = notion.get_articles_not_started()
         logger.info(f"Pobrano {len(articles)} artykułów z Notion")
